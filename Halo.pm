@@ -3,15 +3,80 @@ package POE::Component::Client::Halo;
 use strict;
 
 use vars qw($VERSION);
-$VERSION = '0.1';
+$VERSION = '0.2';
+
+sub DEBUG ()  { 0 };
 
 use Carp qw(croak);
 use Socket;
-use Time::HiRes qw(time);
 use Data::Dumper;
 use POE qw(Session Wheel::SocketFactory);
 
-sub DEBUG ()  { 0 };
+use vars qw(@ISA @EXPORT_OK %EXPORT_TAGS
+            $player_flags $game_flags);
+@ISA = 'Exporter';
+@EXPORT_OK = qw(halo_player_flag halo_game_flag);
+%EXPORT_TAGS = (
+    'flags' => [qw(halo_player_flag halo_game_flag)],
+);
+
+$player_flags = {
+    'NumberOfLives'     => ['Infinite', 1, 3, 5],
+    'MaximumHealth'     => ['50%', '100%', '150%', '200%', '300%', '400%'],
+    'Shields'           => [1, 0],
+    'RespawnTime'       => [0, 5, 10, 15],
+    'RespawnGrowth'     => [0, 5, 10, 15],
+    'OddManOut'         => [0, 1],
+    'InvisiblePlayers'  => [0, 1],
+    'SuicidePenalty'    => [0, 5, 10, 15],
+    'InfiniteGrenades'  => [0, 1],
+    'WeaponSet'         => ['Normal', 'Pistols', 'Rifles', 'Plasma', 'Sniper', 
+                            'No Sniping', 'Rocket Launchers', 'Shotguns', 
+                            'Short Range', 'Human', 'Covenant', 'Classic', 
+                            'Heavy Weapons'],
+    'StartingEquipment' => ['Custom', 'Generic'],
+    'Indicator'         => ['Motion Tracker', 'Nav Points', 'None'],
+    'OtherPlayersOnRadar'   => ['No', 'All', undef, 'Friends'],
+    'FriendIndicators'  => [0, 1],
+    'FriendlyFire'      => ['Off', 'On', 'Shields Only', 'Explosives Only'],
+    'FriendlyFirePenalty'   => [0, 5, 10, 15],
+    'AutoTeamBalance'   => [0, 1],
+
+    # Team Flags
+    'VehicleRespawn'    => [0, 30, 60, 90, 120, 180, 300],
+    'RedVehicleSet'     => ['Default', undef, 'Warthogs', 'Ghosts', 
+                            'Scorpions', 'Rocket Warthogs', 'Banshees', 
+                            'Gun Turrets', 'Custom'],
+    'BlueVehicleSet'     => ['Default', undef, 'Warthogs', 'Ghosts', 
+                            'Scorpions', 'Rocket Warthogs', 'Banshees', 
+                            'Gun Turrets', 'Custom'],
+};
+
+$game_flags = {
+    'GameType'          => ['Capture the Flag', 'Slayer', 'Oddball', 
+                            'King of the Hill', 'Race'],
+    # CTF
+    'Assault'           => [0, 1],
+    'FlagMustReset'     => [0, 1],
+    'FlagAtHomeToScore' => [0, 1],
+    'SingleFlag'        => [0, 60, 120, 180, 300, 600],
+    # Slayer
+    'DeathBonus'        => [1, 0],
+    'KillPenalty'       => [1, 0],
+    'KillInOrder'       => [0, 1],
+    # Oddball
+    'RandomStart'       => [0, 1],
+    'SpeedWithBall'     => ['Slow', 'Normal', 'Fast'],
+    'TraitWithBall'     => ['None', 'Invisible', 'Extra Damage', 'Damage Resistant'],
+    'TraitWithoutBall'  => ['None', 'Invisible', 'Extra Damage', 'Damage Resistant'],
+    'BallType'          => ['Normal', 'Reverse Tag', 'Juggernaut'],
+    'BallSpawnCount'    => [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16],
+    # King of the Hill
+    'MovingHill'        => [0, 1],
+    # Race
+    'RaceType'          => ['Normal', 'Any Order', 'Rally'],
+    'TeamScoring'       => ['Minimum', 'Maximum', 'Sum'],
+};
 
 sub new {
     my $type = shift;
@@ -175,6 +240,8 @@ sub got_response {
         my ($rules, $players, $score) = ($response =~ /^.{5}(.+?)\x00{3}[\x00-\x10](.+)\x00{2}[\x02\x00](.+$)/);
         my @parts = split(/\x00/, $response);
         %{$data{'Rules'}} = split(/\x00/, $rules);
+        $data{'PlayerFlags'} = decode_player_flags($data{'Rules'}{'player_flags'});
+        $data{'GameFlags'} = decode_game_flags($data{'Rules'}{'game_flags'});
         $data{'Players'} = process_segment($players);
         $data{'Score'} = process_segment($score);
     } else {
@@ -189,6 +256,92 @@ sub got_response {
               $heap->{jobs}->{$socket}->{identifier},
               \%data);
     delete($heap->{jobs}->{$socket});
+}
+
+sub decode_player_flags {
+    my $str = shift;
+    my $flags = { };
+    return $flags if $str eq '' || $str !~ /^\d+\,\d+$/;
+
+    my ($player, $vehicle) = split(/\,/, $str);
+
+    $flags->{'Player'}->{'NumberOfLives'} = $player & 3;
+    $flags->{'Player'}->{'MaximumHealth'} = ($player >> 2) & 7;
+    $flags->{'Player'}->{'Shields'} = ($player >> 5) & 1;
+    $flags->{'Player'}->{'RespawnTime'} = ($player >> 6) & 3;
+    $flags->{'Player'}->{'RespawnGrowth'} = ($player >> 8) & 3;
+    $flags->{'Player'}->{'OddManOut'} = ($player >> 10) & 1;
+    $flags->{'Player'}->{'InvisiblePlayers'} = ($player >> 11) & 1;
+    $flags->{'Player'}->{'SuicidePenalty'} = ($player >> 12) & 3;
+    $flags->{'Player'}->{'InfiniteGrenades'} = ($player >> 14) & 1;
+    $flags->{'Player'}->{'WeaponSet'} = ($player >> 15) & 15;
+    $flags->{'Player'}->{'StartingEquipment'} = ($player >> 19) & 1;
+    $flags->{'Player'}->{'Indicator'} = ($player >> 20) & 3;
+    $flags->{'Player'}->{'OtherPlayersOnRadar'} = ($player >> 22) & 3;
+    $flags->{'Player'}->{'FriendIndicators'} = ($player >> 24) & 1;
+    $flags->{'Player'}->{'FriendlyFire'} = ($player >> 25) & 3;
+    $flags->{'Player'}->{'FriendlyFirePenalty'} = ($player >> 27) & 3;
+    $flags->{'Player'}->{'AutoTeamBalance'} = ($player >> 29) & 1;
+
+    $flags->{'Team'}->{'VehicleRespawn'} = ($vehicle & 7);
+    $flags->{'Team'}->{'RedVehicleSet'} = ($vehicle >> 3) & 15;
+    $flags->{'Team'}->{'BlueVehicleSet'} = ($vehicle >> 7) & 15;
+
+    return $flags;
+}
+
+sub decode_game_flags {
+    my $str = shift;
+    my $flags = { };
+    return $flags if $str eq '' || $str !~ /^\d+$/;
+
+    $flags->{'GameType'} = $str & 7;
+    if($flags->{'GameType'} == 1) { # CTF
+        $flags->{'Assault'} = ($str >> 3) && 1;
+        $flags->{'FlagMustReset'} = ($str >> 5) && 1;
+        $flags->{'FlagAtHomeToScore'} = ($str >> 6) && 1;
+        $flags->{'SingleFlag'} = ($str >> 7) && 7;
+    } elsif($flags->{'GameType'} == 2) {    # Slayer
+        $flags->{'DeathBonus'} = ($str >> 3) && 1;
+        $flags->{'KillPenalty'} = ($str >> 5) && 1;
+        $flags->{'KillInOrder'} = ($str >> 6) && 1;
+    } elsif($flags->{'GameType'} == 3) {    # Oddball
+        $flags->{'RandomStart'} = ($str >> 3) && 1;
+        $flags->{'SpeedWithBall'} = ($str >> 5) && 3;
+        $flags->{'TraitWithBall'} = ($str >> 7) && 3;
+        $flags->{'TraitWithoutBall'} = ($str >> 9) && 3;
+        $flags->{'BallType'} = ($str >> 11) && 3;
+        $flags->{'BallSpawnCount'} = ($str >> 13) && 31;
+    } elsif($flags->{'GameType'} == 4) {    # Hill
+        $flags->{'MovingHill'} = ($str >> 3) && 1;
+    } elsif($flags->{'GameType'} == 5) {    # Race
+        $flags->{'RaceType'} = ($str >> 3) && 3;
+        $flags->{'TeamScoring'} = ($str >> 5) && 3;
+    }
+
+    return $flags;
+}
+
+sub halo_player_flag {
+    my ($flag_name, $flag_value) = (shift, shift);
+
+    if(defined($player_flags->{$flag_name}) && 
+       defined($player_flags->{$flag_name}->[$flag_value])) {
+        return $player_flags->{$flag_name}->[$flag_value];
+    } else {
+        return undef;
+    }
+}
+
+sub halo_game_flag {
+    my ($flag_name, $flag_value) = (shift, shift);
+
+    if(defined($game_flags->{$flag_name}) && 
+       defined($game_flags->{$flag_name}->[$flag_value])) {
+        return $game_flags->{$flag_name}->[$flag_value];
+    } else {
+        return undef;
+    }
 }
 
 sub response_timeout {
@@ -285,7 +438,7 @@ of handling multiple requests of different types in parallel.
 
 PoCo::Client::Halo C<new> can take a few parameters:
 
-=over 2
+=over 4
 
 =item Alias => $alias_name
 
@@ -306,11 +459,20 @@ you specified to accept postbacks.
 
 =back
 
+=head1 METHODS
+
+There are two methods that can be exported through the tag ':flags' -- C<halo_player_flag()>
+and C<halo_game_flag()>.  They can be used to translate a specific game flag into its
+English equivalent.
+
+  $english_value = halo_player_flag($flag_name, $flag_value);
+  $english_value = halo_game_flag($flag_name, $flag_value);
+
 =head1 EVENTS
 
 You can send two types of events to PoCo::Client::Halo.
 
-=over 2
+=over 4
 
 =item info
 
@@ -322,20 +484,30 @@ hashref with the returned data, and ARG5 is your unique identifier
 as set during your original post.  Here are the fields you'll get 
 back in ARG4:
 
-=over 3
+=over 4
 
-=item Map
-=item Teamplay
-=item Classic
-=item Mode
-=item MaxPlayers
-=item Hostname
-=item Password
-=item Version
-=item Dedicated
-=item Players
+=item * Map
 
-=over 2
+=item * Teamplay
+
+=item * Classic
+
+=item * Mode
+
+=item * MaxPlayers
+
+=item * Hostname
+
+=item * Password
+
+=item * Version
+
+=item * Dedicated
+
+=item * Players
+
+=back
+
 
 =item detail
 
@@ -387,25 +559,29 @@ a HoHoH's:
           'numplayers' => '2'
       }
   };
+
 At the time of this module's release, ping information was not
 available within the info packets.  They might be made public
-later on, so I left them in the response.  I also haven't figured
-how to decode the "player_flags" info yet.
+later on, so I left them in the response.
+
+You can translate the player and game flags with the two methods
+mentioned above.  Take a look at the sample program to see how
+it's done.
 
 =head1 ERRORS
 
 The errors listed below are ones that will be posted back to you 
 in the 'response' field.
 
-=over 2
+=over 4
 
-=item ERROR: Timed out waiting for response
+=item * ERROR: Timed out waiting for response
 
 Even after retrying, there was no response to your request command.
 
-=back
+=item There are other fatal errors that are handled with croak().
 
-There are other fatal errors that are handled with croak().
+=back
 
 =head1 BUGS
 
@@ -421,8 +597,12 @@ Yay!
 
 =item Divo Networks
 
-Thanks for loaning me servers to test against.  They rent game servers
-and can be found at http://www.divo.net/ .
+Thanks for loaning me servers to test against.
+
+=item Brian Hurley
+
+He decoded all the player and game flags after several long 
+nights.  Thanks.
 
 =head1 AUTHOR & COPYRIGHTS
 

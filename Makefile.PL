@@ -17,7 +17,6 @@ WriteMakefile(
     PREREQ_PM		=> { Carp		=> 0,
     			     Socket		=> 0,
 			     POE		=> 0.15,
-			     Time::HiRes	=> 0,
 			   },
 );
 
